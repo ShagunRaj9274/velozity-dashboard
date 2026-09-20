@@ -1,0 +1,186 @@
+// Velozity Client Project Dashboard — relational schema
+// Every index below is justified in README.md → "Indexing decisions".
+
+generator client {
+  provider   = "prisma-client-js"
+  // Rust-free client: no native query-engine binary, queries run through the `pg` driver adapter.
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PROJECT_MANAGER
+  DEVELOPER
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+// Declared lowest → highest so `ORDER BY priority DESC` puts CRITICAL first
+// (Postgres sorts enums by declaration order, not alphabetically).
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ActivityType {
+  PROJECT_CREATED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_ASSIGNED
+  STATUS_CHANGED
+  TASK_OVERDUE
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_IN_REVIEW
+  TASK_OVERDUE
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  name         String    @db.VarChar(120)
+  email        String    @unique @db.VarChar(254)
+  passwordHash String
+  role         Role
+  isActive     Boolean   @default(true)
+  /// Set when the user's LAST open socket disconnects. Drives missed-event catch-up.
+  lastSeenAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  ownedProjects Project[]      @relation("ProjectOwner")
+  assignedTasks Task[]         @relation("TaskAssignee")
+  createdTasks  Task[]         @relation("TaskCreator")
+  activities    ActivityLog[]
+  notifications Notification[]
+  refreshTokens RefreshToken[]
+
+  @@index([role])
+}
+
+/// One row per issued refresh token (the JWT's `jti`). Enables rotation,
+/// revocation on logout, and reuse detection (stolen-token replay).
+model RefreshToken {
+  id         String    @id // = jti claim of the refresh JWT
+  userId     Int
+  familyId   String // all rotations of one login share a family
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model Client {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(160)
+  company   String?  @db.VarChar(160)
+  email     String?  @db.VarChar(254)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects Project[]
+}
+
+model Project {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(160)
+  description String?
+  clientId    Int
+  /// The PM (or admin) who created the project. PM visibility is scoped by this column.
+  ownerId     Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  client     Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  owner      User          @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  tasks      Task[]
+  activities ActivityLog[]
+
+  @@index([ownerId])
+  @@index([clientId])
+}
+
+model Task {
+  id           Int        @id @default(autoincrement())
+  title        String     @db.VarChar(200)
+  description  String?
+  status       TaskStatus @default(TODO)
+  priority     Priority   @default(MEDIUM)
+  dueDate      DateTime?
+  /// Written ONLY by the scheduled overdue job (and cleared when a task is completed / rescheduled).
+  isOverdue    Boolean    @default(false)
+  overdueSince DateTime?
+  projectId    Int
+  assigneeId   Int?
+  createdById  Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee      User?          @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy     User           @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  activities    ActivityLog[]
+  notifications Notification[]
+
+  @@index([projectId, status])
+  @@index([assigneeId, status])
+  @@index([status, dueDate])
+  @@index([isOverdue])
+}
+
+/// Append-only audit log. Status changes are written here in the same
+/// transaction as the task update — never derived after the fact.
+model ActivityLog {
+  id         Int          @id @default(autoincrement())
+  type       ActivityType
+  projectId  Int
+  taskId     Int?
+  /// null = performed by the system (e.g. the overdue scheduler)
+  actorId    Int?
+  fromStatus TaskStatus?
+  toStatus   TaskStatus?
+  meta       Json?
+  createdAt  DateTime     @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task?   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor   User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([taskId, createdAt(sort: Desc)])
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int
+  type      NotificationType
+  title     String           @db.VarChar(200)
+  body      String
+  taskId    Int?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt(sort: Desc)])
+}

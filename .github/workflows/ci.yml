@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: velozity
+          POSTGRES_PASSWORD: velozity
+          POSTGRES_DB: velozity
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U velozity" --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://velozity:velozity@localhost:5432/velozity
+      JWT_ACCESS_SECRET: ci-access-secret-0123456789abcdef0123456789abcdef
+      JWT_REFRESH_SECRET: ci-refresh-secret-fedcba9876543210fedcba9876543210
+      CLIENT_ORIGIN: http://localhost:5173
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npx prisma migrate deploy
+      - run: npm test
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run build

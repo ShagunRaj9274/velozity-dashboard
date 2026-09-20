@@ -1,0 +1,45 @@
+# One command:  ./scripts/setup-env.sh && docker compose up --build
+# App:  http://localhost:8080      API:  http://localhost:4000/api/health
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: velozity
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./scripts/setup-env.sh first}
+      POSTGRES_DB: velozity
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U velozity -d velozity"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build: ./server
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://velozity:${POSTGRES_PASSWORD}@db:5432/velozity
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?run ./scripts/setup-env.sh first}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?run ./scripts/setup-env.sh first}
+      CLIENT_ORIGIN: http://localhost:8080
+      COOKIE_SAMESITE: lax
+      COOKIE_SECURE: "false" # plain http on localhost; true in production
+      TRUST_PROXY_HOPS: 1
+      OVERDUE_CRON: "* * * * *"
+    ports:
+      - "4000:4000"
+
+  web:
+    build: ./client
+    depends_on:
+      - server
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
