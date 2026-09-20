@@ -11,7 +11,7 @@ services:
     runtime: node
     rootDir: server
     plan: free
-    region: oregon
+    region: singapore
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start:prod
     healthCheckPath: /api/health
